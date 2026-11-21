@@ -9,9 +9,12 @@ def canonical_json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
-def run_manifest(survey, processing_ms):
+def run_manifest(survey, processing_ms, decision_digest=None):
     inputs = {name: sha256(raw).hexdigest() for name, raw in survey.bundle.items()}
     fingerprint = {'inputs': inputs, 'parameters': survey.options.model_dump(), 'rule_version': RULE_VERSION}
+    # 采信点集合与逐幅裁定进入批次键：控制点采信一变，就是另一批，旧签审不沿用。
+    if decision_digest is not None:
+        fingerprint['decision_digest'] = decision_digest
     run_id = sha256(canonical_json(fingerprint).encode()).hexdigest()
     return {'run_id': run_id, **fingerprint, 'data_version': survey.catalog['version'],
             'created_at': datetime.now(timezone.utc).isoformat(timespec='milliseconds'),

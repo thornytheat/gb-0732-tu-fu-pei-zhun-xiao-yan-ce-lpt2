@@ -2,7 +2,8 @@ import {drawResidual} from './plots.js';
 
 export const labels = {
   PASS: '通过', FAIL: '超限', BLOCKED: '待核', FIT: '已拟合', READY: '可签', HOLD: '暂缓', RETURN: '退修',
-  SIGNED: '已签', OUTLIER: '离群', ACCEPTED: '采信', RECEIVED: '已收',
+  LIMITED: '限定范围', SIGNED: '已签', STALE: '签审过期', OUTLIER: '离群', ACCEPTED: '采信', RECEIVED: '已收',
+  FULL: '整幅放行', INSIDE: '域内', WITHIN_MARGIN: '余量内', UNSUPPORTED: '超余量',
   EMPTY_FILE: '空档', BLANK_FILE: '空行档', HEADER_ONLY: '仅表头',
 };
 const reasons = JSON.parse(document.getElementById('reason-dictionary').textContent);
@@ -131,7 +132,26 @@ function seams(root, data, activeEdge) {
   group(root, '见证行隔离', quarantined(data.quarantine));
 }
 
-function review(root, snapshot) {
+function coverage(root, review) {
+  const data = review.coverage;
+  if (!data) return;
+  const head = el('p', null, 'coverage-summary');
+  head.append(el('strong', labels[data.verdict] || data.verdict), document.createTextNode(`　${data.summary}`));
+  root.append(head);
+  root.append(table([['角'], ['图框角像素'], ['最近采信点'], ['点距 px', 'num'], ['支持域距 px', 'num'],
+    ['整幅余量', 'num'], ['判定'], ['依据']], data.corners.map(corner => [
+    corner.label, `${corner.pixel[0].toFixed(0)} / ${corner.pixel[1].toFixed(0)}`,
+    corner.nearest_control || '—', fmt(corner.nearest_px), fmt(corner.hull_distance_px),
+    `${fmt(data.full_margin_px)} (${(data.full_margin_ratio * 100).toFixed(0)}%)`,
+    badge(corner.state), corner.basis,
+  ])));
+  group(root, '支持域', table([['采信点', 'num'], ['支持域面积 px²', 'num'], ['图框面积 px²', 'num'], ['占比', 'num'], ['限定角']], [[
+    data.control_count, fmt(data.hull_area_px2), fmt(data.sheet_area_px2),
+    `${(data.area_ratio * 100).toFixed(1)}%`, data.unsupported_corners.join(' / ') || '—',
+  ]]));
+}
+
+function review(root, snapshot, selected) {
   const signed = new Map(snapshot.signatures.map(item => [item.sheet, item]));
   const totals = snapshot.ledger;
   const width = [totals.controls, totals.ground, totals.witnesses];
@@ -140,12 +160,26 @@ function review(root, snapshot) {
     `${width[1].paired} 已配对 + ${width[1].isolated} 隔离`,
     `${width[2].eligible} 可用 + ${width[2].isolated} 隔离`,
   ];
-  root.append(table([['图幅'], ['校验结论'], ['拟合均方根 m', 'num'], ['关联拼缝'], ['理由'], ['签审员'], ['签审时间']],
+  root.append(table([['图幅'], ['逐幅裁定'], ['签审范围'], ['拟合均方根 m', 'num'], ['关联拼缝'], ['理由'],
+    ['签审员'], ['签审时间']],
     snapshot.reviews.map(row => {
       const signature = signed.get(row.code);
-      return [`${row.code} ${row.title}`, badge(signature ? 'SIGNED' : row.status), fmt(row.fit_rms_m),
-        row.edges.join(' / '), reason(row.reason), signature?.reviewer, signature?.signed_at];
+      const verdict = row.coverage?.verdict;
+      const kind = signature?.scope?.kind || row.scope?.kind;
+      const scope = kind ? (kind === 'LIMITED' ? '限定范围' : '整幅') : '—';
+      const display = signature?.stale ? 'STALE' : signature ? 'SIGNED' : (verdict === 'FULL' || verdict === 'LIMITED')
+        ? verdict : row.status;
+      return [`${row.code} ${row.title}`, badge(display), scope, fmt(row.fit_rms_m),
+        row.edges.join(' / '), row.reason ? reason(row.reason) : row.coverage?.summary, signature?.reviewer,
+        signature ? `${signature.signed_at}${signature.stale ? '（采信已变，需重签）' : ''}` : null];
     })));
+  const detail = snapshot.reviews.find(row => row.code === selected) ||
+    snapshot.reviews.find(row => row.status === 'LIMITED' || row.status === 'RETURN');
+  if (detail) {
+    const block = el('div');
+    group(root, `${detail.code} ${detail.title} 逐角依据`, block);
+    coverage(block, detail);
+  }
   group(root, '原件对账', table([['档件'], ['原件记录', 'num'], ['归属'], ['核对']],
     width.map((entry, index) => [['控制点', '地面点', '拼缝见证'][index], entry.input, sums[index], badge('PASS')])));
 }
@@ -162,5 +196,6 @@ export function renderLedger(root, section, {snapshot, preview, selected, edgeId
   else if (section === 'affine') affine(root, preview ? value.sheets : value, snapshot?.pairing.pairs || []);
   else if (section === 'refit') refit(root, value, selected, limit);
   else if (section === 'seams') seams(root, value, edgeId);
+  else if (section === 'review') review(root, value, selected);
   else renderers[section](root, value);
 }

@@ -140,6 +140,27 @@ export function drawAtlas(canvas, snapshot, selected, edgeId) {
       if (line && (!selected || selected === code)) stroke(ctx, line.map(scale), color, emphasized ? 2.4 : 1.2, dash);
     }
   }
+  for (const review of snapshot.reviews) {
+    if (selected && review.code !== selected) continue;
+    const model = snapshot.refit.sheets[review.code]?.model;
+    const domain = review.coverage?.hull;
+    if (!model || !domain || review.coverage.verdict === 'FULL') continue;
+    const project = ([u, v]) => [model.east[0] * u + model.east[1] * v + model.east[2],
+      model.north[0] * u + model.north[1] * v + model.north[2]];
+    const support = domain.map(project).map(scale);
+    if (support.length > 2) {
+      ctx.globalAlpha = .9;
+      stroke(ctx, [...support, support[0]], palette.amber, 1.4, [5, 3]);
+      ctx.globalAlpha = 1;
+    }
+    for (const corner of review.coverage.corners) {
+      if (corner.supported) continue;
+      const [x, y] = scale(project(corner.pixel));
+      stroke(ctx, [[x - 6, y - 6], [x + 6, y + 6]], palette.red, 1.6);
+      stroke(ctx, [[x - 6, y + 6], [x + 6, y - 6]], palette.red, 1.6);
+      text(ctx, `${corner.corner} 不支持`, x + 8, y - 6, {color: palette.red});
+    }
+  }
   for (const point of points) {
     const flagged = Boolean(point.reason);
     if (flagged) stroke(ctx, [scale(point.ground), scale(point.after.projected)], palette.red, 1.2, [2, 2]);

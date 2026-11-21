@@ -13,7 +13,7 @@
 | M4 仿射拟合 | 求模型与初算误差 | `GET /api/affine` | `app/modules/affine/solve.py` `app/modules/affine/residuals.py` | `tests/test_affine.py` |
 | M5 离群重估 | 查看稳健重估后的残差及排除理由 | `GET /api/refit` | `app/modules/refit/consensus.py` `app/modules/refit/service.py` | `tests/test_refit.py` |
 | M6 接缝验核 | 验证相邻边覆盖、次序与偏差 | `GET /api/seams` | `app/modules/seams/witnesses.py` `app/modules/seams/geometry.py` `app/modules/seams/service.py` | `tests/test_seams.py` |
-| M7 图幅签审 | 勾稽三表、签审、留存和导出 | `POST /api/review/runs` | `app/modules/review/decisions.py` `app/modules/review/reconcile.py` `app/modules/review/service.py` | `tests/test_review.py` |
+| M7 图幅签审 | 勾稽三表、逐幅覆盖裁定、签审、留存和导出 | `POST /api/review/runs` | `app/modules/review/decisions.py` `app/modules/review/coverage.py` `app/modules/review/reconcile.py` `app/modules/review/service.py` | `tests/test_review.py` |
 
 ## 陷阱登记
 
@@ -39,6 +39,10 @@
 | TRAP-28 | `sample_data/field/ground.csv` 的河西 P08 偏离 | 初算剔除误伤多点 | 稳定多数重估恢复良点 | `app/modules/refit/consensus.py` | `tests/test_refit.py::test_refit_recovers_good_points_that_initial_fit_would_drop` |
 | TRAP-29 | `sample_data/field/witness.csv` 的 `HX-QS` | 小训练残差冒充拼缝通过 | 两侧独立投影后取最大平面差 | `app/modules/seams/geometry.py` | `tests/test_seams.py::test_independent_edge_fails_even_when_both_training_residuals_are_small` |
 | TRAP-30 | `sample_data/field/witness.csv` 测试副本用旧控制点名冒充见证 | 重复证据进入独立核验 | 用规范名和像素索引排除 | `app/modules/seams/witnesses.py` | `tests/test_seams.py::test_pseudo_witness_reusing_a_control_alias_is_excluded` |
+| TRAP-31 | `sample_data/field/pixels.csv` 的河西东南角离最近采信点 400+ px | 拟合均方根不到 0.1 m 就整幅签掉 | 采信凸包逐角量距，超出整幅余量只签限定范围 | `app/modules/review/coverage.py` | `tests/test_review.py::test_corner_basis_decides_full_limited_and_return` |
+| TRAP-32 | 12 个点却挤在图框一角的测试副本 | 按点数判为可签 | 支持域占图框不足 10% 整幅退回 | `app/modules/review/coverage.py` | `tests/test_review.py::test_clustered_controls_are_returned_even_with_many_points` |
+| TRAP-33 | 采信点、拼缝限差或裁定改变后沿用旧签审 | 旧结论跟着新裁定入册 | 裁定摘要进批次键，异摘要签审返回 `DECISION_STALE` 并标 `stale` | `app/store.py` `app/manifest.py` | `tests/test_review.py::test_signature_carries_the_adjudicated_scope_and_digest` |
+| TRAP-34 | 两名签审员同时提交同一图幅 | 出现两条签审 | `BEGIN IMMEDIATE` 事务内先读后写，主键兜底，后者得版本冲突 | `app/store.py` | `tests/test_review.py::test_two_reviewers_submitting_at_once_create_one_signature` |
 
 ## 对账
 

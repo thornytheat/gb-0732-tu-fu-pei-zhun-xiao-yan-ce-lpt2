@@ -53,7 +53,6 @@ function plot() {
 
 function renderSheetIndex() {
   const root = byId('sheet-index');
-  const signed = new Set(state.snapshot?.signatures.map(item => item.sheet) || []);
   root.replaceChildren();
   for (const sheet of state.catalog?.sheets || []) {
     const button = el('button', null, 'sheet-item');
@@ -63,7 +62,8 @@ function renderSheetIndex() {
     button.disabled = !state.snapshot;
     button.append(el('span', sheet.code, 'num'), el('span', sheet.title));
     const decision = state.snapshot?.reviews.find(item => item.code === sheet.code);
-    if (decision) button.append(badge(signed.has(sheet.code) ? 'SIGNED' : decision.status));
+    const signature = state.snapshot?.signatures.find(item => item.sheet === sheet.code);
+    if (decision) button.append(badge(signature?.stale ? 'STALE' : signature ? 'SIGNED' : decision.status));
     root.append(button);
   }
   byId('all-sheets').disabled = !state.selected;
@@ -93,15 +93,33 @@ function renderSeamIndex() {
   byId('edge-caption').textContent = edge ? (edge.max_m == null ? reason(edge.reason) : `沿甲边位置 % · 法向偏移 m`) : '';
 }
 
+function signable() {
+  return state.snapshot?.reviews.filter(row => row.signable && !state.snapshot.signatures.some(
+    signature => signature.sheet === row.code && !signature.stale)) || [];
+}
+
+function scopeText(review) {
+  if (!review?.scope) return '—';
+  const excluded = review.scope.excluded_corners.length ? ` · 不含 ${review.scope.excluded_corners.join('/')} 角` : '';
+  return `${review.scope.kind === 'LIMITED' ? '限定范围' : '整幅放行'} · 支持域占图框 ` +
+    `${(review.coverage.area_ratio * 100).toFixed(1)}%${excluded}`;
+}
+
 function renderSign() {
-  const eligible = state.snapshot?.reviews.filter(row => row.status === 'READY' &&
-    !state.snapshot.signatures.some(signature => signature.sheet === row.code)) || [];
+  const eligible = signable();
   sign.hidden = state.section !== 'review' || !eligible.length;
   const options = byId('signature-sheet');
   const selected = options.value;
-  options.replaceChildren(...eligible.map(row => new Option(`${row.code} ${row.title}`, row.code)));
+  options.replaceChildren(...eligible.map(row => new Option(
+    `${row.code} ${row.title} · ${row.scope?.kind === 'LIMITED' ? '限定范围' : '整幅'}`, row.code)));
   if (eligible.some(row => row.code === selected)) options.value = selected;
   else if (eligible.some(row => row.code === state.selected)) options.value = state.selected;
+  byId('signature-scope').textContent = scopeText(eligible.find(row => row.code === options.value));
+}
+
+function refreshSignScope() {
+  byId('signature-scope').textContent =
+    scopeText(signable().find(row => row.code === byId('signature-sheet').value));
 }
 
 function renderDetail() {
@@ -128,7 +146,7 @@ function showSnapshot(snapshot) {
   const ledger = snapshot.ledger.controls;
   const values = {input: ledger.input, accepted: ledger.accepted, outlier: ledger.outlier, isolated: ledger.isolated,
     edges: snapshot.seams.edges.filter(edge => edge.status === 'PASS').length,
-    ready: snapshot.reviews.filter(row => row.status === 'READY').length};
+    ready: snapshot.reviews.filter(row => row.signable).length};
   for (const [key, value] of Object.entries(values)) byId(`k-${key}`).textContent = value;
   const manifest = snapshot.manifest;
   byId('edition').textContent = snapshot.catalog.title;
@@ -215,9 +233,14 @@ sign.addEventListener('submit', async event => {
   try {
     const sheet = byId('signature-sheet').value;
     const reviewer = byId('reviewer').value;
-    await post(`/api/review/runs/${runId}/signatures`, {sheet, reviewer, expected_version: 0});
+    const review = state.snapshot.reviews.find(row => row.code === sheet);
+    await post(`/api/review/runs/${runId}/signatures`, {
+      sheet, reviewer, expected_version: 0,
+      expected_digest: state.snapshot.manifest.decision_digest,
+      scope: review?.scope?.kind,
+    });
     showSnapshot(await request(`/api/review/runs/${runId}`));
-    byId('run-state').textContent = `${sheet} 已签审入册`;
+    byId('run-state').textContent = `${sheet} 已签审入册 · ${review?.scope?.kind === 'LIMITED' ? '限定范围' : '整幅'}`;
   } catch (error) {
     feedback('signature-error', error.message);
   } finally {
@@ -265,6 +288,7 @@ form.addEventListener('change', () => {
   }
 });
 byId('print').addEventListener('click', () => window.print());
+byId('signature-sheet').addEventListener('change', refreshSignScope);
 let frame;
 const redraw = () => {
   cancelAnimationFrame(frame);

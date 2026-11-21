@@ -1,5 +1,5 @@
 import unicodedata
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Path, Request
 from fastapi.responses import Response
@@ -19,6 +19,8 @@ class SignatureInput(BaseModel):
     sheet: Annotated[str, Field(pattern=r'^[A-Z0-9][A-Z0-9-]{0,23}$')]
     reviewer: Annotated[str, Field(min_length=1, max_length=30)]
     expected_version: Annotated[int, Field(ge=0)] = 0
+    expected_digest: Annotated[str | None, Field(pattern=r'^[0-9a-f]{64}$')] = None
+    scope: Literal['FULL', 'LIMITED'] | None = None
 
     @field_validator('reviewer', mode='before')
     @classmethod
@@ -43,7 +45,8 @@ def get_run(request: Request, run_id: RunId):
 
 @router.post('/runs/{run_id}/signatures')
 def signatures(request: Request, run_id: RunId, form: SignatureInput):
-    return request.app.state.store.sign(run_id, form.sheet, form.reviewer, form.expected_version)
+    return request.app.state.store.sign(run_id, form.sheet, form.reviewer, form.expected_version,
+                                        form.expected_digest, form.scope)
 
 
 @router.get('/runs/{run_id}/export')

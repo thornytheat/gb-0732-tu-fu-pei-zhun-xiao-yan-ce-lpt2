@@ -78,13 +78,15 @@ def test_review_readiness_uses_edges_and_blocks_invalid_signature(client):
     response = client.post('/api/review/runs', json={})
     payload = response.json()
     assert [row['status'] for row in payload['reviews']] == ['RETURN', 'RETURN', 'READY', 'HOLD']
+    assert [row['coverage']['verdict'] for row in payload['reviews']] == ['LIMITED', 'FULL', 'FULL', 'RETURN']
     url = f"/api/review/runs/{payload['manifest']['run_id']}/signatures"
     blocked = client.post(url, json={'sheet': '0421', 'reviewer': '周测绘'})
     assert blocked.status_code == 409
-    assert blocked.json()['detail']['evidence'] == 'GAP_OVER_LIMIT'
+    assert blocked.json()['detail']['evidence']['reason'] == 'GAP_OVER_LIMIT'
     signed = client.post(url, json={'sheet': '0431', 'reviewer': ' 周测绘 '})
     assert signed.status_code == 200
     assert signed.json()['reviewer'] == '周测绘'
+    assert signed.json()['scope']['kind'] == 'FULL'
 
 
 def test_stale_signature_cannot_replace_first_reviewer(client):  # TRAP-26
@@ -125,3 +127,96 @@ def test_any_input_byte_change_creates_a_new_snapshot(settings, tmp_path):
     assert not reused and first['manifest']['run_id'] != second['manifest']['run_id']
     assert second['ledger']['controls']['blank'] == 2
     assert Survey(settings, RunOptions()).intake['tables']['pixels.csv']['records'] == 53
+
+
+def test_corner_basis_decides_full_limited_and_return(field, reference):
+    full = {row['code']: row for row in
+            __import__('app.modules.review.decisions', fromlist=['decisions']).decisions(
+                reference.catalog, reference.refit, reference.seams)}
+    assert all(row['coverage']['verdict'] == 'FULL' for row in full.values())
+    assert all(corner['state'] in ('INSIDE', 'WITHIN_MARGIN')
+               for corner in full['0421']['coverage']['corners'])
+    back = {row['code']: row for row in
+            __import__('app.modules.review.decisions', fromlist=['decisions']).decisions(
+                field.catalog, field.refit, field.seams)}
+    # 河西东南角离最近采信点四百多像素，超过整幅余量，只能限定范围。
+    southeast = next(corner for corner in back['0421']['coverage']['corners'] if corner['corner'] == 'SE')
+    assert southeast['state'] == 'UNSUPPORTED'
+    assert southeast['hull_distance_px'] > back['0421']['coverage']['full_margin_px']
+    assert back['0421']['coverage']['verdict'] == 'LIMITED'
+    assert back['0421']['status'] == 'RETURN' and back['0421']['reason'] == 'GAP_OVER_LIMIT'
+    # 双井共线退化，没有支持域，不能靠点数凑齐就签。
+    assert back['0432']['coverage']['verdict'] == 'RETURN'
+
+
+def test_clustered_controls_are_returned_even_with_many_points(field):
+    from app.modules.review.coverage import assess
+    sheet = field.catalog['sheets'][0]
+    clustered = [{'name': f'C{index}', 'pixel': (300 + (index % 4) * 15, 400 + (index // 4) * 15)}
+                 for index in range(12)]
+    result = assess(sheet, clustered)
+    assert result['verdict'] == 'RETURN'
+    assert result['reason'] == 'COVERAGE_UNSUPPORTED'
+    assert result['area_ratio'] < result['min_area_ratio']
+
+
+def test_few_but_evenly_distributed_controls_are_released_in_full(field):
+    from app.modules.review.coverage import assess
+    sheet = field.catalog['sheets'][0]
+    sparse = [{'name': name, 'pixel': pixel} for name, pixel in
+              (('A', (120, 110)), ('B', (1080, 110)), ('C', (1080, 790)), ('D', (120, 790)))]
+    result = assess(sheet, sparse)
+    assert result['verdict'] == 'FULL'
+    assert result['unsupported_corners'] == []
+
+
+def test_signature_carries_the_adjudicated_scope_and_digest(client):
+    run = client.post('/api/review/runs', json={'dataset': 'reference'}).json()
+    path = f"/api/review/runs/{run['manifest']['run_id']}/signatures"
+    digest = run['manifest']['decision_digest']
+    blocked = client.post(path, json={'sheet': '0421', 'reviewer': '周测绘', 'scope': 'LIMITED'})
+    assert (blocked.status_code, blocked.json()['detail']['code']) == (409, 'SIGNATURE_SCOPE_CONFLICT')
+    stale = client.post(path, json={'sheet': '0421', 'reviewer': '周测绘', 'expected_digest': '0' * 64})
+    assert (stale.status_code, stale.json()['detail']['code']) == (409, 'DECISION_STALE')
+    signed = client.post(path, json={'sheet': '0421', 'reviewer': '周测绘', 'expected_digest': digest,
+                                     'scope': 'FULL'}).json()
+    assert signed['scope']['kind'] == 'FULL' and signed['decision_digest'] == digest
+    readback = client.get(f"/api/review/runs/{run['manifest']['run_id']}").json()
+    assert readback['signatures'][0]['scope'] == signed['scope']
+
+
+def test_limited_scope_can_be_signed_once_other_edges_pass(settings, tmp_path):
+    new_root = tmp_path / 'widened'
+    shutil.copytree(settings.sample_root, new_root)
+    settings.sample_root = new_root
+    store = Store(settings.database)
+    store.initialize()
+    result, _ = run_review(settings, store, RunOptions(seam_limit_m=3))
+    review = by_key(result['reviews'], '0421')
+    assert (review['status'], review['signable']) == ('LIMITED', True)
+    signed = store.sign(result['manifest']['run_id'], '0421', '周测绘', 0, result['manifest']['decision_digest'], 'LIMITED')
+    assert signed['scope']['kind'] == 'LIMITED'
+    assert signed['scope']['excluded_corners'] == ['SE']
+
+
+def test_two_reviewers_submitting_at_once_create_one_signature(settings):
+    store = Store(settings.database)
+    store.initialize()
+    result, _ = run_review(settings, store, RunOptions(dataset='reference'))
+    run_id, digest = result['manifest']['run_id'], result['manifest']['decision_digest']
+
+    def submit(name):
+        try:
+            return store.sign(run_id, '0431', name, 0, digest, 'FULL')
+        except RegisterError as error:
+            return error.code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(submit, ('周测绘', '陈测绘')))
+    winners = [outcome for outcome in outcomes if isinstance(outcome, dict)]
+    assert len(winners) == 1
+    assert sorted(outcome if isinstance(outcome, str) else 'SIGNED' for outcome in outcomes) == \
+        sorted(['SIGNED', 'SIGNATURE_VERSION_CONFLICT'])
+    with sqlite3.connect(settings.database) as connection:
+        assert connection.execute('SELECT COUNT(*) FROM signatures WHERE run_id = ?', (run_id,)).fetchone() == (1,)
+    assert store.get(run_id)['signatures'] == [winners[0]]

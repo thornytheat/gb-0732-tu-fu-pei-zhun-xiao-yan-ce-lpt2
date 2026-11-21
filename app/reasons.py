@@ -30,6 +30,8 @@ REASONS = {
     'MODEL_UNAVAILABLE': '至少一幅图缺少重估模型',
     'GAP_OVER_LIMIT': '地面拼缝偏差超限',
     'NO_EDGE_REGISTERED': '未登记独立拼缝',
+    'COVERAGE_INSUFFICIENT': '采信控制点不足以围成支持域',
+    'COVERAGE_UNSUPPORTED': '控制点集中于局部，支持域过小',
 }
 
 
